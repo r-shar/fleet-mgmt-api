@@ -3,7 +3,8 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func
 from sqlalchemy.ext.automap import automap_base
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, unset_jwt_cookies
-from werkzeug.security import generate_password_hash, check_password_hash
+from flask_bcrypt import generate_password_hash, check_password_hash
+
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+mysqlconnector://root@localhost/fleet_management'
@@ -27,12 +28,6 @@ class Account(db.Model):
   # relationships
   drivers = db.relationship('Driver', backref='account', uselist=False)
   staff_members = db.relationship('StaffMember', backref='account', uselist=False)
-
-  def set_password(self, password):
-    self.password_hash = generate_password_hash(password)
-
-  def check_password(self, password):
-    return check_password_hash(self.password_hash, password)
 
 class Insurance(db.Model):
   __tablename__ = 'insurance'
@@ -132,33 +127,38 @@ with app.app_context():
   @app.route('/register/driver', methods=['POST'])
   def register_driver():
     driver_data = request.get_json()
-    new_account = Account(email=driver_data['email'], password=driver_data['password'],
-                          zipcode=driver_data['zipcode'], state=driver_data['state'],
-                          city=driver_data['city'], street_addr=driver_data['street_addr'])
+    new_account = Account(email=driver_data['email'], zipcode=driver_data['zipcode'],
+                          state=driver_data['state'], city=driver_data['city'],
+                          street_addr=driver_data['street_addr'])
+    app.logger.info(f"New Account: {new_account}")  # Add logging to check the new_account object
+
+    try:
+        hashed_password = generate_password_hash(driver_data['password'])
+        new_account.password_hash = hashed_password
+
+        # new_account.set_password(driver_data['password'])
+        app.logger.info("Password set successfully")  # Log successful password setting
+    except Exception as e:
+        app.logger.error(f"Error setting password: {e}")  # Log any errors during password setting
     db.session.add(new_account)
     db.session.commit()
-    new_driver = Driver(first_name=driver_data['first_name'], last_name=driver_data['last_name'],
-                        license_no=driver_data['license_no'], dob=driver_data['dob'],
-                        account_id=new_account.account_id)
-    db.session.add(new_driver)
-    db.session.commit()
     return jsonify({'message': 'Driver registered successfully'}), 201
-  
-  # update aaccount
+
+  # Update an account
   @app.route('/account/update/<int:account_id>', methods=['PUT'])
   def update_account(account_id):
     account = db.session.query(Account).get(account_id)
     if not account:
-      return jsonify({'error': 'Account not found'}), 404
+        return jsonify({'error': 'Account not found'}), 404
 
     update_data = request.get_json()
     account.email = update_data.get('email', account.email)
-    account.password = update_data.get('password', account.password)
     account.zipcode = update_data.get('zipcode', account.zipcode)
     account.state = update_data.get('state', account.state)
     account.city = update_data.get('city', account.city)
     account.street_addr = update_data.get('street_addr', account.street_addr)
-
+    if 'password' in update_data:
+        account.set_password(update_data['password']) 
     db.session.commit()
     return jsonify({'message': 'Account updated successfully'}), 200
 
@@ -185,35 +185,31 @@ with app.app_context():
     else:
       return jsonify({'error': 'Driver not found'}), 404
 
-  # Login API (dummy implementation)
+  # Login API 
+  
   @app.route('/login', methods=['POST'])
   def login():
     credentials = request.get_json()
-    username = credentials.get('username')
+    email = credentials.get('email')
     password = credentials.get('password')
-    # print(username, password)
 
-    # Perform authentication logic (e.g., check credentials against database)
-    user = db.session.query(Account).filter_by(email=username).first()
-    # print(user.email, user.password_hash)
+    # Retrieve the user from the database
+    user = db.session.query(Account).filter_by(email=email).first()
 
+    check_password = check_password_hash(user.password_hash, password)
 
-    if not user.password_hash:
-      user.set_password(user, password)
-      db.session.commit()
-    
-    print(user.email, user.password_hash)
-    if user and user.check_password(password):
-      access_token = create_access_token(identity=username)
+    if user and check_password:
+      access_token = create_access_token(identity=email)
       return jsonify(access_token=access_token), 200
     else:
-      return jsonify({'error': 'Invalid username or password'}), 401
+      return jsonify({'error': 'Invalid email or password'}), 401
 
-  # Logout API (dummy implementation)
+  # Logout API
   @app.route('/logout', methods=['POST'])
+  @jwt_required()
   def logout():
     response = jsonify({'message': 'Logout successful'})
-    unset_jwt_cookies(response)  # Clear JWT cookies from the response
+    unset_jwt_cookies(response)
     return response, 200
 
   # Protected route (requires JWT token)
