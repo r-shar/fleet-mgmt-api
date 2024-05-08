@@ -2,12 +2,19 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import func
 from sqlalchemy.ext.automap import automap_base
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, unset_jwt_cookies
-from flask_bcrypt import generate_password_hash, check_password_hash
+from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity, unset_jwt_cookies
+from dotenv import load_dotenv
+import os
 
+load_dotenv()
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+mysqlconnector://root@localhost/fleet_management'
+# app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+mysqlconnector://root@localhost/fleet_management'
+# app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+mysqlconnector://root:divija@localhost/fleet_management'
+
+app.config['SQLALCHEMY_DATABASE_URI'] = f"mysql+pymysql://{os.getenv('DB_USERNAME')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOSTNAME')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
+
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = 'your_jwt_secret_key'
 jwt = JWTManager(app)
@@ -24,7 +31,8 @@ class Account(db.Model):
   state = db.Column(db.String(50))
   city = db.Column(db.String(50))
   street_addr = db.Column(db.String(100))
-  password_hash = db.Column(db.String(128), nullable=False)
+  password_hash = db.Column(db.String(128), nullable=True)
+  role = db.Column(db.String(50))
   # relationships
   drivers = db.relationship('Driver', backref='account', uselist=False)
   staff_members = db.relationship('StaffMember', backref='account', uselist=False)
@@ -124,41 +132,49 @@ with app.app_context():
   # User Authentication API
 
   # Register a new driver
-  @app.route('/register/driver', methods=['POST'])
+  @app.route('/register', methods=['POST'])
   def register_driver():
     driver_data = request.get_json()
-    new_account = Account(email=driver_data['email'], zipcode=driver_data['zipcode'],
-                          state=driver_data['state'], city=driver_data['city'],
-                          street_addr=driver_data['street_addr'])
-    app.logger.info(f"New Account: {new_account}")  # Add logging to check the new_account object
-
-    try:
-        hashed_password = generate_password_hash(driver_data['password'])
-        new_account.password_hash = hashed_password
-
-        # new_account.set_password(driver_data['password'])
-        app.logger.info("Password set successfully")  # Log successful password setting
-    except Exception as e:
-        app.logger.error(f"Error setting password: {e}")  # Log any errors during password setting
+    new_account = Account(email=driver_data['email'], password=driver_data['password'],
+                          zipcode=driver_data['zipcode'], state=driver_data['state'],
+                          city=driver_data['city'], street_addr=driver_data['street_addr'],role=driver_data['role'])
     db.session.add(new_account)
     db.session.commit()
-    return jsonify({'message': 'Driver registered successfully'}), 201
+    if driver_data['role'] == 'driver':
+        new_driver = Driver(
+            first_name=driver_data['first_name'], 
+            last_name=driver_data['last_name'],
+            license_no=driver_data['license_no'], 
+            dob=driver_data['dob'],
+            account_id=new_account.account_id
+        )
+        db.session.add(new_driver)
+    elif driver_data['role'] == 'admin':
+        new_staff_member = StaffMember(
+            first_name=driver_data['first_name'], 
+            last_name=driver_data['last_name'],
+            account_id=new_account.account_id
+        )
+        print(new_account.account_id)
+        db.session.add(new_staff_member)
 
-  # Update an account
+    db.session.commit()
+    return jsonify({'message': f"{driver_data['role'].capitalize()} registered successfully"}), 201
+  # update aaccount
   @app.route('/account/update/<int:account_id>', methods=['PUT'])
   def update_account(account_id):
     account = db.session.query(Account).get(account_id)
     if not account:
-        return jsonify({'error': 'Account not found'}), 404
+      return jsonify({'error': 'Account not found'}), 404
 
     update_data = request.get_json()
     account.email = update_data.get('email', account.email)
+    account.password = update_data.get('password', account.password)
     account.zipcode = update_data.get('zipcode', account.zipcode)
     account.state = update_data.get('state', account.state)
     account.city = update_data.get('city', account.city)
     account.street_addr = update_data.get('street_addr', account.street_addr)
-    if 'password' in update_data:
-        account.set_password(update_data['password']) 
+
     db.session.commit()
     return jsonify({'message': 'Account updated successfully'}), 200
 
@@ -168,7 +184,7 @@ with app.app_context():
   def get_account(account_id):
     account = db.session.query(Account).get(account_id)
     if account:
-      account_info = {'email': account.email, 'zipcode': account.zipcode, 'state': account.state,
+      account_info = {'email': account.email, 'zipcode': account.zipcode, 'state': account.state,'password':account.password,
                       'city': account.city, 'street_addr': account.street_addr}
       return jsonify(account_info), 200
     else:
@@ -185,31 +201,98 @@ with app.app_context():
     else:
       return jsonify({'error': 'Driver not found'}), 404
 
-  # Login API 
-  
+  # Login API (dummy implementation)
   @app.route('/login', methods=['POST'])
   def login():
     credentials = request.get_json()
-    email = credentials.get('email')
+    username = credentials.get('username')
     password = credentials.get('password')
 
-    # Retrieve the user from the database
-    user = db.session.query(Account).filter_by(email=email).first()
+    # Fetch user from database by email
+    user = db.session.query(Account).filter_by(email=username).first()
 
-    check_password = check_password_hash(user.password_hash, password)
+    if user and user.password == password:
+       
+        user_details = {
+            'email': user.email,
+            'zipcode': user.zipcode,
+            'state': user.state,
+            'city': user.city,
+            'street_addr': user.street_addr,
+            'role': user.role,
+            'account_id': user.account_id
+        }
+        
+        if user.role == 'driver':
+            driver = db.session.query(Driver).filter_by(account_id=user.account_id).first()
+            if driver:
+                user_details['driver_id'] = driver.driver_id
 
-    if user and check_password:
-      access_token = create_access_token(identity=email)
-      return jsonify(access_token=access_token), 200
+        elif user.role == 'admin':
+            staff_member = db.session.query(StaffMember).filter_by(account_id=user.account_id).first()
+            if staff_member:
+                user_details['staff_id'] = staff_member.staff_id
+
+        return jsonify(user_details), 200
     else:
-      return jsonify({'error': 'Invalid email or password'}), 401
+        return jsonify({'error': 'Invalid username or password'}), 401
+#vehicle information by driver id
+  @app.route('/vehiclebydriverid', methods=['POST'])
+  def get_vehicles_for_driver():
+      driver_info = request.get_json()
+      driver_id = driver_info['driver_id']
+      # Fetch the driver from the database
+      driver = db.session.query(Driver).filter_by(driver_id=driver_id).first()
+      
+      if not driver:
+          return jsonify({'error': 'Driver not found'}), 404
+      vehicles = db.session.query(Vehicle).filter(Vehicle.driver_id == driver_id).all()
+      
+      if not vehicles:
+          return jsonify({'message': 'No vehicles found for this driver'}), 200
+    
+      vehicle_list = [{
+          'vehicle_id': vehicle.vehicle_id,
+          'make': vehicle.make,
+          'model': vehicle.model,
+          'manufacturer': vehicle.manufacturer
+          
+      } for vehicle in vehicles]
 
-  # Logout API
+      return jsonify(vehicle_list), 200
+  # get all driver 
+  @app.route('/drivers', methods=['GET'])
+  def get_drivers():
+    drivers = db.session.query(Driver).join(Account).all()
+    
+  
+    drivers_list = []
+    for driver in drivers:
+        driver_info = {
+            'driver_id': driver.driver_id,
+            'first_name': driver.first_name,
+            'last_name': driver.last_name,
+            'license_no': driver.license_no,
+            'dob': driver.dob.strftime('%Y-%m-%d'),
+            'account': {
+                'account_id': driver.account.account_id,
+                'email': driver.account.email,
+                'city': driver.account.city,
+                'state': driver.account.state,
+                'zipcode': driver.account.zipcode,
+                'street_addr': driver.account.street_addr
+            }
+        }
+        drivers_list.append(driver_info)
+    
+    return jsonify(drivers_list), 200
+
+
+  # Logout API (dummy implementation)
   @app.route('/logout', methods=['POST'])
-  @jwt_required()
   def logout():
     response = jsonify({'message': 'Logout successful'})
-    unset_jwt_cookies(response)
+    unset_jwt_cookies(response)  
     return response, 200
 
   # Protected route (requires JWT token)
@@ -255,12 +338,14 @@ with app.app_context():
           }
 
       vehicle_dict = {
-        'id': vehicle.vehicle_id,
+        'vehicle_id': vehicle.vehicle_id,
         'make': vehicle.make,
         'model': vehicle.model,
-        'owner': owner_info
+        'owner': owner_info,
+        'manufacturer':vehicle.manufacturer
       }
       vehicle_list.append(vehicle_dict)
+      print(vehicle_list)
 
     return jsonify(vehicle_list), 200
 
@@ -280,6 +365,7 @@ with app.app_context():
           }
 
       vehicle_info = {
+        'vehicle_id':vehicle.vehicle_id,
         'make': vehicle.make,
         'model': vehicle.model,
         'owner': owner_info
@@ -299,7 +385,7 @@ with app.app_context():
     manufacturer = vehicle_data.get('manufacturer', 'Unknown Manufacturer')
     insurance_id = vehicle_data.get('insurance_id', None)
     driver_id = vehicle_data.get('driver_id', None)
-    num_sensors = 0 # Initialize the number of sensors to 0
+    # num_sensors = 0 # Initialize the number of sensors to 0
 
     new_vehicle = Vehicle(
         make=make,
@@ -309,13 +395,32 @@ with app.app_context():
         manufacturer=manufacturer,
         insurance_id=insurance_id,
         driver_id=driver_id,
-        num_sensors=num_sensors
+        # num_sensors=num_sensors
     )
 
     db.session.add(new_vehicle)
     db.session.commit()
 
     return jsonify({'message': 'Vehicle registered successfully'}), 201
+  #get sensor by vehicle id
+  @app.route('/vehicle/<int:vehicle_id>/sensors', methods=['GET'])
+  def get_sensors_by_vehicle(vehicle_id):
+    vehicle = db.session.query(Vehicle).filter_by(vehicle_id=vehicle_id).first()
+    if not vehicle:
+        return jsonify({'error': 'Vehicle not found'}), 404
+
+   
+    sensors = db.session.query(Sensor).filter_by(vehicle_id=vehicle_id).all()
+    if not sensors:
+        return jsonify({'message': 'No sensors found for this vehicle'}), 200
+
+    sensor_list = [{
+        'sensor_id': sensor.sensor_id,
+        'sensor_type': sensor.sensor_type,
+        'sensor_status': sensor.sensor_status,
+    } for sensor in sensors]
+
+    return jsonify(sensor_list), 200
   
   # Update vehicle information
   @app.route('/vehicle/update/<int:vehicle_id>', methods=['PUT'])
@@ -363,11 +468,11 @@ with app.app_context():
     db.session.add(new_sensor)
     db.session.commit()
 
-    # Update the num_sensors in the vehicle table
-    vehicle = db.session.query(Vehicle).filter_by(vehicle_id=sensor_data['vehicle_id']).first()
-    if vehicle:
-      vehicle.num_sensors = db.session.query(func.count(Sensor.vehicle_id)).filter_by(vehicle_id=sensor_data['vehicle_id']).scalar()
-      db.session.commit()
+    # # Update the num_sensors in the vehicle table
+    # vehicle = db.session.query(Vehicle).filter_by(vehicle_id=sensor_data['vehicle_id']).first()
+    # if vehicle:
+    #   vehicle.num_sensors = db.session.query(func.count(Sensor.vehicle_id)).filter_by(vehicle_id=sensor_data['vehicle_id']).scalar()
+    #   db.session.commit()
 
     return jsonify({'message': 'Sensor registered successfully'}), 201
 
@@ -375,7 +480,7 @@ with app.app_context():
   @app.route('/insurances', methods=['GET'])
   def get_insurances():
     insurances = db.session.query(Insurance).all()
-    insurance_list = [{'id': insurance.insurance_id, 'insured_by': insurance.insured_by, 'expiration_date': insurance.expiration_date, 'policy_no': insurance.policy_no, 'vehicle_id': insurance.vehicle_id} for insurance in insurances]
+    insurance_list = [{'insurance_id': insurance.insurance_id, 'insured_by': insurance.insured_by, 'expiration_date': insurance.expiration_date, 'policy_no': insurance.policy_no, 'vehicle_id': insurance.vehicle_id} for insurance in insurances]
     return jsonify(insurance_list), 200
   
   # get insurance for vehicle
@@ -434,7 +539,7 @@ with app.app_context():
     maintenance_list = []
     for record in maintenance_records:
       maintenance_info = {
-        'maintenance_id': record.maintenance_id,
+        'maintenance_id': record.record_id,
         'wiper_fluid_refilled': record.wiper_fluid_refilled,
         'wipers_changed': record.wipers_changed,
         'oil_changed': record.oil_changed,
@@ -462,7 +567,36 @@ with app.app_context():
     db.session.add(new_maintenance)
     db.session.commit()
     return jsonify({'message': 'Maintenance record added successfully'}), 201
+  # get all drivers
+  @app.route('/drivers/details', methods=['GET'])
+  def get_driver_details():
+    drivers = db.session.query(
+        Driver,
+        Account,
+        func.count(Vehicle.vehicle_id).label('vehicle_count')
+    ).join(Account, Driver.account_id == Account.account_id)\
+     .outerjoin(Vehicle, Driver.driver_id == Vehicle.driver_id)\
+     .group_by(Driver.driver_id, Account.account_id).all()
+
+    # Construct the response data
+    drivers_details = []
+    for driver, account, vehicle_count in drivers:
+        driver_info = {
+            'Email': account.email,
+            'Firstname': driver.first_name,
+            'Lastname': driver.last_name,
+            'DOB': driver.dob.strftime('%Y-%m-%d'),
+            'Street Address': account.street_addr,
+            'City': account.city,
+            'State': account.state,
+            'Zipcode': account.zipcode,
+            'Licence Number': driver.license_no,
+            'Number of Registered Vehicles': vehicle_count  
+        }
+
+        drivers_details.append(driver_info)
+
+    return jsonify(drivers_details), 200
 
 if __name__ == '__main__':
-  app.run(debug=True)
-  
+   app.run(host='127.0.0.1',port=5000,debug=True)
