@@ -1,0 +1,26 @@
+# Ignore Python bytecodes, caches, and virtual environment files
+__pycache__/
+*.pyc
+venv/
+env/
+
+# Ignore IDE/Editor specific files
+.vscode/
+.idea/
+
+# Ignore environment variables file
+.env
+
+# Ignore database files
+*.db
+
+# Ignore log files
+*.log
+
+# Ignore configuration files
+config.py
+
+# Ignore system and temporary files
+.DS_Store
+*.swp
+*~
